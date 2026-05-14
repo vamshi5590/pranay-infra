@@ -1,0 +1,13 @@
+{
+  "app": "python app.py",
+  "watch": {
+    "include": ["**"],
+    "exclude": ["README.md", "*.py[cod]", "*$py.class", "cdk.out", "venv"]
+  },
+  "context": {
+    "@aws-cdk/core:newStyleStackSynthesis": true,
+    "@aws-cdk/aws-s3:grantWriteWithoutAcl": true,
+    "@aws-cdk/core:enableStackNameDuplicates": true,
+    "availability-zones:enable-context-caching": true
+  }
+}
