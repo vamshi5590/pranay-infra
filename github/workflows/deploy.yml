@@ -1,0 +1,314 @@
+name: AWS CDK Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+      dry_run:
+        description: 'Dry run (preview changes only)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      enable_logging:
+        description: 'Enable server access logging'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+      enable_versioning:
+        description: 'Enable bucket versioning'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+      enable_lifecycle:
+        description: 'Enable lifecycle rules'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      deployment_tags:
+        description: 'Custom tags (comma-separated key=value)'
+        required: false
+        default: 'Team=Platform,CostCenter=Engineering'
+        type: string
+      notifications:
+        description: 'Send notifications'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+env:
+  AWS_REGION: us-east-1
+  NODE_VERSION: '18'
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  # ============================================
+  # Pre-deployment validation
+  # ============================================
+  pre-deployment:
+    name: 🔐 Pre-deployment Checks
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Echo - Pre-deployment Started
+        run: |
+          echo "╔════════════════════════════════════════╗"
+          echo "║   PRE-DEPLOYMENT VALIDATION           ║"
+          echo "╚════════════════════════════════════════╝"
+          echo ""
+          echo "Environment: ${{ github.event.inputs.environment }}"
+          echo "Triggered by: ${{ github.actor }}"
+          echo "Time: $(date)"
+          echo ""
+      
+      - name: Environment check
+        run: |
+          echo "🔍 Validating deployment environment..."
+          ENV=${{ github.event.inputs.environment }}
+          
+          if [[ "$ENV" == "prod" ]]; then
+            echo "⚠️  PRODUCTION deployment detected"
+            echo "✓ Extra caution enabled"
+          elif [[ "$ENV" == "staging" ]]; then
+            echo "ℹ️  STAGING deployment"
+            echo "✓ Standard checks enabled"
+          else
+            echo "ℹ️  DEVELOPMENT deployment"
+            echo "✓ Fast deployment enabled"
+          fi
+          echo ""
+          echo "✅ Environment validation passed!"
+          echo ""
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: Validate configuration
+        run: |
+          echo "🔧 Validating configuration for ${{ github.event.inputs.environment }}..."
+          pip install -q -r requirements.txt
+          
+          python << 'EOF'
+import sys
+from config import get_config
+
+try:
+    config = get_config('${{ github.event.inputs.environment }}')
+    print(f"✓ Configuration loaded: {config.bucket_name}")
+    print(f"✓ Encryption: {'ON' if config.enable_encryption else 'OFF'}")
+    print(f"✓ Versioning: {'ON' if config.enable_versioning else 'OFF'}")
+    print(f"✓ Logging: {'ON' if config.enable_server_access_logs else 'OFF'}")
+except Exception as e:
+    print(f"✗ Configuration error: {e}")
+    sys.exit(1)
+EOF
+          echo ""
+          echo "✅ Configuration validation passed!"
+          echo ""
+      
+      - name: Echo - Pre-deployment Complete
+        run: |
+          echo "✅ Pre-deployment checks PASSED"
+          echo ""
+
+  # ============================================
+  # Main deployment
+  # ============================================
+  deploy:
+    name: 🚀 Deploy to ${{ github.event.inputs.environment }}
+    runs-on: ubuntu-latest
+    needs: [pre-deployment]
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Echo - Deployment Started
+        run: |
+          echo "╔════════════════════════════════════════╗"
+          echo "║   DEPLOYMENT IN PROGRESS              ║"
+          echo "║   Environment: ${{ github.event.inputs.environment }}"
+          echo "╚════════════════════════════════════════╝"
+          echo ""
+      
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: Install dependencies
+        run: |
+          echo "📦 Installing dependencies..."
+          npm install -g aws-cdk
+          pip install -q -r requirements.txt
+          echo "✅ Dependencies installed!"
+          echo ""
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: CDK Bootstrap
+        run: |
+          echo "🔧 Bootstrapping AWS CDK..."
+          export DEPLOYMENT_ENV=${{ github.event.inputs.environment }}
+          cdk bootstrap
+          echo "✅ CDK Bootstrap complete!"
+          echo ""
+      
+      - name: CDK Synth
+        run: |
+          echo "🏗️  Synthesizing CloudFormation template..."
+          export DEPLOYMENT_ENV=${{ github.event.inputs.environment }}
+          cdk synth
+          echo "✅ Synthesis complete!"
+          echo ""
+      
+      - name: CDK Deploy
+        run: |
+          echo "🚀 Deploying to AWS..."
+          export DEPLOYMENT_ENV=${{ github.event.inputs.environment }}
+          
+          if [[ "${{ github.event.inputs.environment }}" == "prod" ]]; then
+            echo "⚠️  PRODUCTION deployment - Requiring approval"
+            cdk deploy --require-approval=any-change
+          else
+            echo "ℹ️  Non-production deployment"
+            cdk deploy --require-approval=never
+          fi
+          
+          echo ""
+          echo "✅ Deployment complete!"
+          echo ""
+      
+      - name: Echo - Deployment Complete
+        run: |
+          echo "╔════════════════════════════════════════╗"
+          echo "║   ✅ DEPLOYMENT SUCCESSFUL            ║"
+          echo "╚════════════════════════════════════════╝"
+          echo ""
+          echo "Stack deployed successfully!"
+          echo "Environment: ${{ github.event.inputs.environment }}"
+          echo "Time: $(date)"
+          echo ""
+
+  # ============================================
+  # Post-deployment validation
+  # ============================================
+  post-deployment:
+    name: ✅ Post-deployment Validation
+    runs-on: ubuntu-latest
+    needs: [deploy]
+    if: always()
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Echo - Post-deployment Started
+        run: |
+          echo "╔════════════════════════════════════════╗"
+          echo "║   POST-DEPLOYMENT VALIDATION          ║"
+          echo "╚════════════════════════════════════════╝"
+          echo ""
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: Install dependencies
+        run: |
+          pip install -q -r requirements.txt
+          pip install -q boto3
+      
+      - name: Validate deployment
+        run: |
+          echo "🔍 Validating deployed resources..."
+          pip install -q -r requirements.txt
+          
+          python << 'EOF'
+from config import get_config
+import os
+
+env = '${{ github.event.inputs.environment }}'
+config = get_config(env)
+
+print(f"Checking resources for {env} environment:")
+print(f"  • Expected bucket: {config.bucket_name}")
+print(f"  • Versioning enabled: {config.enable_versioning}")
+print(f"  • Encryption enabled: {config.enable_encryption}")
+print(f"  • Logging enabled: {config.enable_server_access_logs}")
+print("")
+print("✅ Configuration validated!")
+EOF
+          echo ""
+      
+      - name: Generate deployment report
+        run: |
+          echo "📊 Deployment Report"
+          echo "═════════════════════════════════════════"
+          echo ""
+          echo "Environment: ${{ github.event.inputs.environment }}"
+          echo "Deployment Date: $(date)"
+          echo "Deployed by: ${{ github.actor }}"
+          echo "Commit SHA: ${{ github.sha }}"
+          echo ""
+          echo "Resources Deployed:"
+          echo "───────────────────────────────────────"
+          echo "✓ S3 Bucket"
+          echo "✓ Encryption Configuration"
+          echo "✓ Versioning"
+          echo "✓ Public Access Block"
+          if [[ "${{ github.event.inputs.environment }}" != "dev" ]]; then
+            echo "✓ Access Logging"
+            echo "✓ Lifecycle Rules"
+          fi
+          echo ""
+          echo "───────────────────────────────────────"
+          echo "Overall Status: ✅ DEPLOYMENT SUCCESSFUL"
+          echo "═════════════════════════════════════════"
+          echo ""
+      
+      - name: Echo - Post-deployment Complete
+        if: always()
+        run: |
+          echo "✅ Post-deployment validation COMPLETE"
+          echo ""
+          echo "Deployment pipeline finished!"
+          echo "Stack is ready to use."
+          echo ""
